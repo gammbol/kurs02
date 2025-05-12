@@ -1,8 +1,18 @@
 #include <wx/wx.h>
 #include <wx/grid.h>
+#include <wx/spinctrl.h>
+#include <wx/filedlg.h>
+#include <wx/wfstream.h>
+#include <wx/txtstrm.h>
+#include <wx/menu.h>
+#include <wx/msgdlg.h>
+#include <wx/sizer.h>
+
 #include <vector>
-#include <algorithm>
 #include <string>
+#include <algorithm>
+
+
 
 // --- Структуры ---
 struct Job {
@@ -17,19 +27,25 @@ struct ScheduledJob {
     Job job;
     int startTime;
     int endTime;
+    int machineId;
+};
+
+struct Machine {
+    int id;
+    int availableTime = 0; // Время, когда машина станет свободной
 };
 
 // --- Планировщик ---
 class Scheduler {
 public:
-    enum class Mode {
+    enum Mode {
         ByPriority,
         ShortestJobFirst,
         EarliestDeadlineFirst,
         FirstComeFirstServed
     };
 
-    static std::vector<ScheduledJob> Generate(std::vector<Job> jobs, Mode mode) {
+    static std::vector<ScheduledJob> GenerateMultiMachine(std::vector<Job> jobs, Scheduler::Mode mode, int machineCount) {
         switch (mode) {
             case Mode::ByPriority:
                 std::sort(jobs.begin(), jobs.end(), [](const Job& a, const Job& b) {
@@ -53,12 +69,22 @@ public:
                 break;
         }
 
+        std::vector<Machine> machines(machineCount);
+        for (int i = 0; i < machineCount; ++i)
+            machines[i].id = i;
+
         std::vector<ScheduledJob> schedule;
-        int currentTime = 0;
+
         for (const auto& job : jobs) {
-            schedule.push_back({job, currentTime, currentTime + job.duration});
-            currentTime += job.duration;
+            auto minMachine = std::min_element(machines.begin(), machines.end(),
+                [](const Machine& a, const Machine& b) { return a.availableTime < b.availableTime; });
+
+            int start = minMachine->availableTime;
+            int end = start + job.duration;
+            schedule.push_back({job, start, end, minMachine->id});
+            minMachine->availableTime = end;
         }
+
         return schedule;
     }
 };
@@ -74,13 +100,14 @@ public:
 
         // Таблица
         grid = new wxGrid(panel, wxID_ANY, wxDefaultPosition, wxDefaultSize);
-        grid->CreateGrid(0, 5);
-        grid->SetColLabelValue(0, "ID");
-        grid->SetColLabelValue(1, "Name");
-        grid->SetColLabelValue(2, "Duration");
-        grid->SetColLabelValue(3, "Priority");
-        grid->SetColLabelValue(4, "Deadline");
+        grid->CreateGrid(0, 4);
+        grid->SetColLabelValue(0, "Name");
+        grid->SetColLabelValue(1, "Duration");
+        grid->SetColLabelValue(2, "Priority");
+        grid->SetColLabelValue(3, "Deadline");
         grid->SetMinSize(wxSize(850, 250));
+
+        grid->AppendRows(1);
 
         mainSizer->Add(grid, 0, wxALL | wxEXPAND, 10);
 
@@ -90,6 +117,13 @@ public:
         wxButton* btnAddRow = new wxButton(panel, wxID_ANY, "Add Row");
         wxButton* btnDeleteRow = new wxButton(panel, wxID_ANY, "Delete Row");
         wxButton* btnSchedule = new wxButton(panel, wxID_ANY, "Run Scheduling");
+
+        machineCountSpin = new wxSpinCtrl(panel, wxID_ANY, "", wxDefaultPosition, wxSize(60, -1));
+        machineCountSpin->SetRange(1, 20);
+        machineCountSpin->SetValue(2); // По умолчанию 2 станка
+
+        buttonSizer->Add(new wxStaticText(panel, wxID_ANY, "Machines:"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 5);
+        buttonSizer->Add(machineCountSpin, 0, wxALL, 5);
 
         algoChoice = new wxChoice(panel, wxID_ANY);
         algoChoice->Append("By Priority");
@@ -115,14 +149,29 @@ public:
 
         panel->SetSizer(mainSizer);
 
+        menuBar = new wxMenuBar();
+
+        menu = new wxMenu();
+        menu->Append(wxID_OPEN);
+        menu->AppendSeparator();
+        menu->Append(wxID_EXIT);
+
+        menuBar->Append(menu, "File");
+        SetMenuBar(menuBar);
+
         // --- Bindings ---
         btnAddRow->Bind(wxEVT_BUTTON, &MyFrame::OnAddRow, this);
         btnDeleteRow->Bind(wxEVT_BUTTON, &MyFrame::OnDeleteRow, this);
         btnSchedule->Bind(wxEVT_BUTTON, &MyFrame::OnScheduleClicked, this);
+        Bind(wxEVT_MENU, &MyFrame::OnOpenFile, this, wxID_OPEN);
+        Bind(wxEVT_MENU, [](wxCommandEvent&){ wxTheApp->Exit(); }, wxID_EXIT);
     }
 
 private:
+    wxMenuBar* menuBar;
+    wxMenu* menu;
     wxGrid* grid;
+    wxSpinCtrl* machineCountSpin;
     wxChoice* algoChoice;
     wxTextCtrl* output;
 
@@ -147,11 +196,11 @@ private:
 
         for (int i = 0; i < rows; ++i) {
             try {
-                int id = std::stoi(grid->GetCellValue(i, 0).ToStdString());
-                std::string name = grid->GetCellValue(i, 1).ToStdString();
-                int duration = std::stoi(grid->GetCellValue(i, 2).ToStdString());
-                int priority = std::stoi(grid->GetCellValue(i, 3).ToStdString());
-                int deadline = std::stoi(grid->GetCellValue(i, 4).ToStdString());
+                int id = i;
+                std::string name = grid->GetCellValue(i, 0).ToStdString();
+                int duration = std::stoi(grid->GetCellValue(i, 1).ToStdString());
+                int priority = std::stoi(grid->GetCellValue(i, 2).ToStdString());
+                int deadline = std::stoi(grid->GetCellValue(i, 3).ToStdString());
 
                 jobs.push_back({id, name, duration, priority, deadline});
             } catch (...) {
@@ -161,12 +210,46 @@ private:
         }
 
         Scheduler::Mode mode = static_cast<Scheduler::Mode>(algoChoice->GetSelection());
-        auto schedule = Scheduler::Generate(jobs, mode);
+        int machineCount = machineCountSpin->GetValue();
+        auto schedule = Scheduler::GenerateMultiMachine(jobs, mode, machineCount);
 
         output->Clear();
         for (const auto& job : schedule) {
-            output->AppendText(wxString::Format("Job: %-10s | Start: %2d | End: %2d\n",
-                job.job.name, job.startTime, job.endTime));
+            output->AppendText(wxString::Format("Job: %-10s | Start: %2d | End: %2d | Machine: %d\n",
+                job.job.name, job.startTime, job.endTime, job.machineId));
+        }
+    }
+
+    void OnOpenFile(wxCommandEvent& event) {
+         wxFileDialog openFileDialog(this, "Open .txt file", "", "",
+        "TXT file (*.txt)|*.txt", wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+
+        if (openFileDialog.ShowModal() == wxID_CANCEL)
+            return;
+
+        wxFileInputStream input(openFileDialog.GetPath());
+        if (!input.IsOk()) {
+            wxLogError("Не удалось открыть файл '%s'.", openFileDialog.GetPath());
+            return;
+        }
+
+        wxTextInputStream text(input, "\n", wxConvUTF8);
+        grid->ClearGrid();
+        grid->DeleteRows(0, grid->GetNumberRows());
+
+        int row = 0;
+        while (!input.Eof()) {
+            wxString line = text.ReadLine();
+            wxArrayString parts = wxSplit(line, ';');
+
+            if (parts.size() >= 4) {
+                grid->AppendRows(1);
+                grid->SetCellValue(row, 0, parts[0]);
+                grid->SetCellValue(row, 1, parts[1]);
+                grid->SetCellValue(row, 2, parts[2]);
+                grid->SetCellValue(row, 3, parts[3]);
+                row++;
+            }
         }
     }
 };
