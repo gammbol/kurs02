@@ -45,7 +45,7 @@ public:
         FirstComeFirstServed
     };
 
-    static std::vector<ScheduledJob> GenerateMultiMachine(std::vector<Job> jobs, Scheduler::Mode mode, int machineCount) {
+    static std::vector<Job> GenerateSchedule(std::vector<Job> jobs, Scheduler::Mode mode, int machineCount) {
         switch (mode) {
             case Mode::ByPriority:
                 std::sort(jobs.begin(), jobs.end(), [](const Job& a, const Job& b) {
@@ -69,6 +69,10 @@ public:
                 break;
         }
 
+        return jobs;
+    }
+
+    static std::vector<ScheduledJob> GenerateMachine(std::vector<Job> jobs, int machineCount) {
         std::vector<Machine> machines(machineCount);
         for (int i = 0; i < machineCount; ++i)
             machines[i].id = i;
@@ -211,7 +215,9 @@ private:
 
         Scheduler::Mode mode = static_cast<Scheduler::Mode>(algoChoice->GetSelection());
         int machineCount = machineCountSpin->GetValue();
-        auto schedule = Scheduler::GenerateMultiMachine(jobs, mode, machineCount);
+        auto scheduleNoMach = Scheduler::GenerateSchedule(jobs, mode, machineCount);
+        auto schedule = Scheduler::GenerateMachine(scheduleNoMach, machineCount);
+
 
         output->Clear();
         for (const auto& job : schedule) {
